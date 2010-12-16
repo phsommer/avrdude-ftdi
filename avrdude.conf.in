@@ -328,6 +328,10 @@ programmer
   usbpid     = 0x6010;
   usbvendor  = "";
   usbproduct = "";
+  sck   = 1;
+  mosi  = 2;
+  miso  = 3;
+  reset = 4;
 ;
 
 programmer

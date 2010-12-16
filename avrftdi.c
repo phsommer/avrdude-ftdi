@@ -286,10 +286,10 @@ static int avrftdi_open(PROGRAMMER * pgm, char *port)
 		pid = 0x6010;
 
 	if (SCK != (1 << (pgm->pinno[PIN_AVR_SCK] - 1))
-		|| SDO != (1 << (pgm->pinno[PIN_AVR_MOSI] - 1))
-		|| SDI != (1 << (pgm->pinno[PIN_AVR_MISO] - 1))) {
+		|| PDO != (1 << (pgm->pinno[PIN_AVR_MISO] - 1))
+		|| PDI != (1 << (pgm->pinno[PIN_AVR_MOSI] - 1))) {
 		fprintf(stderr, "%s failure: pinning for FTDI MPSSE must be:\n"
-			"\tSCK: 1, SDO: 2, SDI: 3(is: %d,%d,%d)\n",
+			"\tSCK: 1, PDI: 2, PDO: 3(is: %d,%d,%d)\n",
 			progname,
 			pgm->pinno[PIN_AVR_SCK],
 			pgm->pinno[PIN_AVR_MOSI],
@@ -301,7 +301,8 @@ static int avrftdi_open(PROGRAMMER * pgm, char *port)
 		
 	}
 
-	fprintf(stdout, "%s info: reset pin value: %x\n", progname, pgm->pinno[PIN_AVR_RESET]);
+	if (verbose)
+		fprintf(stdout, "%s info: reset pin value: %x\n", progname, pgm->pinno[PIN_AVR_RESET]);
 	if (pgm->pinno[PIN_AVR_RESET] < 4 || pgm->pinno[PIN_AVR_RESET] == 0) {
 		fprintf(stderr, "%s failure: RESET pin clashes with data pin or is not set.\n",
 			progname);
@@ -445,208 +446,6 @@ static int avrftdi_chip_erase(PROGRAMMER * pgm, AVRPART * p)
 	return 0;
 }
 
-static int avrftdi_flash_read(PROGRAMMER * pgm, AVRPART * p, AVRMEM * m, int page_size, int len)
-{
-	/*
-	 *Reading from flash
-	 */
-	int i, buf_index, buf_size = 0, psize = m->page_size;
-	unsigned char o_buf[4*len], *o_ptr = o_buf;
-	unsigned char i_buf[4*len];
-	int address = 0;
-	int bytes = len;
-	int blocksize;
-	unsigned char buffer[m->size], *bufptr = buffer;
-	
-	memset(o_buf, 0, sizeof(o_buf));
-	memset(i_buf, 0, sizeof(i_buf));
-	memset(buffer, 0, sizeof(buffer));
-
-	while (bytes) {
-		if (bytes > psize) {
-			blocksize = psize/2;
-			bytes -= psize;
-		} else {
-			blocksize = bytes/2;
-			bytes = 0;
-		}
-		
-		for(i = 0; i < blocksize; i++) {
-			if(verbose)
-				fprintf(stdout, "bufsize: %d, i: %d, add: %d\n", buf_size, i, address);
-			avr_set_bits(m->op[AVR_OP_READ_LO], o_ptr);
-			avr_set_addr(m->op[AVR_OP_READ_LO], o_ptr, address);
-			o_ptr += 4;
-			avr_set_bits(m->op[AVR_OP_READ_HI], o_ptr);
-			avr_set_addr(m->op[AVR_OP_READ_HI], o_ptr, address);
-			o_ptr += 4;
-			
-			address++;
-			buf_size = o_ptr - o_buf;
-			
-			if((buf_size >= (page_size - 8)) || ( i == blocksize-1)) {
-				E(avrftdi_transmit(TRX, o_buf, i_buf, buf_size) < 0);
-
-				for(buf_index = 0; buf_index < buf_size; buf_index+=8) {
-					avr_get_output(m->op[AVR_OP_READ_LO], i_buf+buf_index, bufptr++);
-					avr_get_output(m->op[AVR_OP_READ_HI], i_buf+buf_index+4, bufptr++);
-				}
-
-				if(verbose >= 2) {
-					buf_dump(i_buf, buf_size, "i_buf", 0, 16);
-					buf_dump(m->buf, 640, "vfy buf", 0, 16);
-				}
-				o_ptr = o_buf;
-			}
-		}
-		report_progress(2*address, len, NULL);
-	}
-	memcpy(m->buf, buffer, sizeof(buffer));
-	
-	return len;
-}
-
-static int avrftdi_eeprom_read(PROGRAMMER *pgm, AVRPART *p, AVRMEM *m, int page_size, int len)
-{
-	unsigned char cmd[4];
-	unsigned char buffer[len], *bufptr = buffer;
-
-	int add;
-	
-	memset(buffer, 0, sizeof(buffer));
-	
-	for(add = 0; add < len; add++)
-	{
-		avr_set_bits(m->op[AVR_OP_READ], cmd);
-		avr_set_addr(m->op[AVR_OP_READ], cmd, add);
-
-		E(avrftdi_transmit(TRX, cmd, cmd, 4) < 0);
-		
-		avr_get_output(m->op[AVR_OP_READ], cmd, bufptr++);
-		report_progress(add, len, NULL);
-	}
-
-	memcpy(m->buf, buffer, len);
-	return len;
-}
-
-static int avrftdi_paged_load(PROGRAMMER * pgm, AVRPART * p, AVRMEM * m, int page_size, int n_bytes)
-{
-	if(strcmp(m->desc, "flash") == 0) 
-		return avrftdi_flash_read(pgm, p, m, page_size, n_bytes);
-	else if(strcmp(m->desc, "eeprom") == 0)
-		return avrftdi_eeprom_read(pgm, p, m, page_size, n_bytes);
-	else
-		return -2;
-}
-
-static int avrftdi_eeprom_write(PROGRAMMER *pgm, AVRPART *p, AVRMEM *m, int page_size, int len)
-{
-	unsigned char cmd[4];
-	unsigned char *data = m->buf;
-	int add;
-	
-	avr_set_bits(m->op[AVR_OP_WRITE], cmd);
-	
-	for(add = 0; add < len; add++)
-	{
-		avr_set_addr(m->op[AVR_OP_WRITE], cmd, add);
-		avr_set_input(m->op[AVR_OP_WRITE], cmd, *data++);
-		
-		E(avrftdi_transmit(TX, cmd, cmd, 4) < 0);
-		
-		usleep((m->max_write_delay));
-		report_progress(add, len, NULL);
-	}
-	return len;
-}
-
-
-static int avrftdi_flash_write(PROGRAMMER * pgm, AVRPART * p, AVRMEM * m, int page_size, int len)
-{
-	int i;
-	int address = 0, buf_size;
-	int bytes = len;
-	int blocksize;
-	unsigned char buf[4*len + 4], *bufptr = buf;
-	unsigned char *buffer = m->buf;
-	unsigned char byte;
-
-	//page_size = (page_size > m->page_size) ? m->page_size : page_size - 8;
-	page_size = m->page_size;
-
-	while (bytes) {
-		if (bytes > page_size) {
-			blocksize = (page_size)/2;
-			bytes -= (page_size);
-		} else {
-			blocksize = bytes/2;
-			bytes = 0;
-		}
-		if(verbose)
-			fprintf(stderr, "-< bytes = %d of %d, blocksize = %d of %d\n", len - bytes, len, blocksize, m->page_size/2);
-
-		for (i = 0; i < blocksize; i++) {
-			/*setting word*/
-			avrftdi_get_command(p, m, AVR_OP_LOADPAGE_LO, bufptr);
-			avr_set_addr(m->op[AVR_OP_LOADPAGE_LO], bufptr, address);
-			avr_set_input(m->op[AVR_OP_LOADPAGE_LO], bufptr, *buffer++);
-			bufptr += 4;		
-			avrftdi_get_command(p, m, AVR_OP_LOADPAGE_HI, bufptr);
-			avr_set_addr(m->op[AVR_OP_LOADPAGE_HI], bufptr, address);
-			avr_set_input(m->op[AVR_OP_LOADPAGE_HI], bufptr, *buffer++);
-			bufptr += 4;
-			address++;
-		}
-
-		if(verbose)
-			fprintf(stderr, "address = %d, page_size = %d\n", address, m->page_size);
-	
-		if((!((address * 2) % m->page_size) || !bytes)) {
-			if(m->op[AVR_OP_WRITEPAGE] == NULL) {
-				fprintf(stdout, "%s failure: Write Page (WRITEPAGE) command not defined for %s\n", progname, p->desc);
-				exit(1);
-			} else {
-				avr_set_bits(m->op[AVR_OP_WRITEPAGE], bufptr);
-			}
-			/*setting page address highbyte*/
-			avr_set_addr(m->op[AVR_OP_WRITEPAGE], bufptr, address - 1);
-			bufptr += 4;
-		}
-			
-		buf_size = bufptr - buf;
-			
-		if(verbose >= 2)
-			buf_dump(buf, sizeof(buf), "command buffer", 0, 16*3);
-		if(verbose)	
-			fprintf(stdout, "%s info: buffer size: %d\n", progname, buf_size);
-
-		E(avrftdi_transmit(TX, buf, buf, buf_size) < 0);
-			
-		bufptr = buf;
-		if ((!((address * 2) % m->page_size) || !bytes)) {
-			do {
-				pgm->read_byte(pgm, p, m, (address * 2) -1, &byte);
-				//fprintf(stdout, "read: %02x expected: %02x\n", byte, m->buf[address*2-1]);
-			} while(m->buf[(address*2) - 1] != byte);
-			//fprintf(stdout, "%s info: programming delay %d\n", progname, m->min_write_delay);
-			//usleep((m->min_write_delay)*2);
-		}
-			
-		report_progress(2*address, len, NULL);
-	}
-	return len;
-}
-
-static int avrftdi_paged_write(PROGRAMMER * pgm, AVRPART * p, AVRMEM * m, int page_size, int n_bytes)
-{
-	if(strcmp(m->desc, "flash") == 0)
-		return avrftdi_flash_write(pgm, p, m, page_size, n_bytes);
-	else if (strcmp(m->desc, "eeprom") == 0)
-		return avrftdi_eeprom_write(pgm, p, m, page_size, n_bytes);
-	else
-		return -2;
-}
 
 
 void avrftdi_initpgm(PROGRAMMER * pgm)
@@ -672,9 +471,6 @@ void avrftdi_initpgm(PROGRAMMER * pgm)
 	/*
 	 * optional functions
 	 */
-
-	pgm->paged_write = avrftdi_paged_write;
-	pgm->paged_load = avrftdi_paged_load;
 	
 	pgm->rdy_led = set_led_rdy;
 	pgm->err_led = set_led_err;

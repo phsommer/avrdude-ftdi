@@ -6,8 +6,10 @@ extern "C" {
 #endif
 
 #define SCK 0x01
-#define SDO 0x02
-#define SDI 0x04
+/** FTDI out / AVR in **/
+#define PDI 0x02	
+/** FTDI in / AVR out **/
+#define PDO 0x04
 
 #define RX 0x20
 #define TX 0x11
